@@ -1,0 +1,136 @@
+// settings for this custom code:
+const pipeline = 22679326; // new pipeline
+const dealstage = 53954819; // new dealstage
+
+//Import required libraries
+const hubspot = require('@hubspot/api-client');
+
+exports.main = async (event, callback) => { 
+  //Create a new HubSpot Client
+  const hubspotClient = new hubspot.Client({
+    accessToken: process.env.PrivateAppDealActions
+  });
+
+  //Retrieving the included properties
+  const amount = event.inputFields['amount'];  
+  const autorenew = Boolean(event.inputFields['AutoRenew']);  // custom property!!!
+  const hubspot_owner_id = Number(event.inputFields['hubspot_owner_id']);
+  const business_unit = event.inputFields['business_unit'];    // custom property!!! Do not use if you don't use business units
+  const deal_currency_code = event.inputFields['deal_currency_code'];
+  const description = event.inputFields['description'];
+  const dealname = event.inputFields['dealname'];
+  const hs_analytics_source = event.inputFields['hs_analytics_source'];
+  const renewal_date = Number(event.inputFields['renewal_date']);
+  const autorenew_duration = Number(event.inputFields['autorenew_duration']);  // custom property!!!
+  const hs_mrr = Number(event.inputFields['hs_mrr']);
+  const success_owner_id = event.inputFields['success_owner_id'];  // custom property!!!
+  const contract_owner_id = event.inputFields['contract_owner_id'];  // custom property!!!
+  const hs_object_id = event.inputFields['hs_object_id'];
+
+	// Amend some of the properties
+  
+  const new_renewal_date = new Date(renewal_date)
+	new_renewal_date.setMonth(new_renewal_date.getMonth() + autorenew_duration)
+ 
+  // calculate new ammount based on MRR
+  const new_amount = hs_mrr * autorenew_duration; // could do with a bit more logics.
+  
+ 
+  // remove part of name after ' - ' and add renewal.
+  const new_dealname =  dealname.split(" - ", 1) + " - Renewal";
+
+  
+  
+  //Set properties for the renewal deal        
+  const properties = {
+    "amount": new_amount,
+    "autorenew": autorenew,
+    "business_unit": business_unit,
+    "closedate": renewal_date.valueOf(), // Renewal Deal new close date by adding deal length to the original deal close date
+    "renew_date": new_renewal_date.valueOf(), // Renewal Deal new close date by adding deal length to the original deal close date    "business_unit": business_unit,
+    "deal_currency_code": deal_currency_code,
+    "description": description,
+    "dealname": new_dealname,
+    "hs_analytics_source": hs_analytics_source,
+    "autorenew_duration": autorenew_duration, // Renewal deal new length. By default, same length as the original deal
+    "hubspot_owner_id": hubspot_owner_id, // Renewal deal owner. The value used here is the ID of the CSM responsible for renewal. You'll use your own value generated in your portal
+    "success_owner_id": success_owner_id,
+    "contract_owner_id": contract_owner_id,
+    "pipeline": pipeline, // Renewal Deal pipeline. The value used here is the ID of the renewal pipeline. You'll use your own value generated in your portal
+    "dealstage": dealstage, // Renewal Deal stage
+    "parent_id": hs_object_id,
+  };
+
+  const SimplePublicObjectInput = {
+    properties
+  };
+
+  // Create the deal
+  const NewDealID = await hubspotClient.crm.deals.basicApi.create(SimplePublicObjectInput)
+  .then(DealCreateResponse => {
+    return (DealCreateResponse.id);
+  });
+//    console.log("New Deal ID is " + NewDealID);  
+  
+  
+  // get company associations
+    const AssociatedPrimaryCompany = await hubspotClient.crm.deals.associationsApi.getAll(event.object.objectId, 'company')
+    .then(AssociatedCompaniesResponse => {
+      const el = AssociatedCompaniesResponse.results.find(({ associationTypes }) => associationTypes.find(({ label }) => label === 'Primary')) 
+        if (el) {
+          return el.toObjectId;
+        } else {
+          console.log('Not found', AssociatedCompaniesResponse.results)
+        }
+    });
+
+  // create primary company association
+  // associationTypeId list can be found on: https://legacydocs.hubspot.com/docs/methods/crm-associations/crm-associations-overview
+  hubspotClient.crm.deals.associationsApi.create(
+      NewDealID,
+      'companies',
+      AssociatedPrimaryCompany,
+      [
+          {
+                "associationCategory": "HUBSPOT_DEFINED",
+                "associationTypeId": 5
+          }
+      ]
+  )
+  
+  
+  // get contacts associations
+  const AssociatedContacts = await hubspotClient.crm.deals.associationsApi.getAll(event.object.objectId, 'contact')
+  .then(AssociatedContactsResponse => {
+
+    //        console.log( JSON.stringify(AssociatedContactsResponse) )
+
+    return AssociatedContactsResponse.results.map(({ toObjectId }) => String(toObjectId))
+  });  
+  
+  
+  // write contact associations to deal.
+  const inputs = AssociatedContacts.map(id => ({
+    from: { id: NewDealID },
+    to: { id },
+    type: 'deal_to_contact'
+  }))
+  const BatchInputPublicAssociationContacts = { inputs };
+
+  try {
+    await hubspotClient.crm.associations.batchApi.create("Deals", "Contacts", BatchInputPublicAssociationContacts);
+  } catch (e) {
+    e.message === 'HTTP request failed'
+      ? console.error(JSON.stringify(e.response, null, 2))
+      : console.error(e)
+  }
+
+  
+  // Pass information back as a data output to use as a data input with Copy to Property workflow action.
+  callback({ 
+    outputFields: {
+      NewDealID: NewDealID,
+    }
+  }); // end callback  
+
+}
