@@ -11,11 +11,10 @@ exports.main = async (event, callback) => {
     accessToken: process.env.PrivateAppDealActions
   });
 
-  //Retrieving the included properties
-  const amount = event.inputFields['amount'];  
+  //Retrieving the included properties 
   const autorenew = Boolean(event.inputFields['AutoRenew']);  // custom property!!!
   const hubspot_owner_id = Number(event.inputFields['hubspot_owner_id']);
-  const business_unit = event.inputFields['business_unit'];    // custom property!!! Do not use if you don't use business units
+  const business_unit = event.inputFields['business_unit'];    // custom property!!! No need for this if you don't use business units on a deal level.
   const deal_currency_code = event.inputFields['deal_currency_code'];
   const description = event.inputFields['description'];
   const dealname = event.inputFields['dealname'];
@@ -27,20 +26,16 @@ exports.main = async (event, callback) => {
   const contract_owner_id = event.inputFields['contract_owner_id'];  // custom property!!!
   const hs_object_id = event.inputFields['hs_object_id'];
 
-	// Amend some of the properties
-  
+  // Amend some of the properties
   const new_renewal_date = new Date(renewal_date)
 	new_renewal_date.setMonth(new_renewal_date.getMonth() + autorenew_duration)
- 
+
   // calculate new ammount based on MRR
   const new_amount = hs_mrr * autorenew_duration; // could do with a bit more logics.
-  
- 
+
   // remove part of name after ' - ' and add renewal.
   const new_dealname =  dealname.split(" - ", 1) + " - Renewal";
 
-  
-  
   //Set properties for the renewal deal        
   const properties = {
     "amount": new_amount,
@@ -61,26 +56,21 @@ exports.main = async (event, callback) => {
     "parent_id": hs_object_id,
   };
 
-  const SimplePublicObjectInput = {
-    properties
-  };
-
-  // Create the deal
-  const NewDealID = await hubspotClient.crm.deals.basicApi.create(SimplePublicObjectInput)
+// Create the deal
+const NewDealID = await hubspotClient.crm.deals.basicApi.create({ properties })
   .then(DealCreateResponse => {
     return (DealCreateResponse.id);
   });
-//    console.log("New Deal ID is " + NewDealID);  
+  //    console.log("New Deal ID is " + NewDealID);  
   
-  
-  // get company associations
+  // get primary company associations
     const AssociatedPrimaryCompany = await hubspotClient.crm.deals.associationsApi.getAll(event.object.objectId, 'company')
     .then(AssociatedCompaniesResponse => {
       const el = AssociatedCompaniesResponse.results.find(({ associationTypes }) => associationTypes.find(({ label }) => label === 'Primary')) 
         if (el) {
           return el.toObjectId;
         } else {
-          console.log('Not found', AssociatedCompaniesResponse.results)
+          console.log('Primary company not found', AssociatedCompaniesResponse.results)
         }
     });
 
@@ -98,33 +88,29 @@ exports.main = async (event, callback) => {
       ]
   )
   
-  
   // get contacts associations
   const AssociatedContacts = await hubspotClient.crm.deals.associationsApi.getAll(event.object.objectId, 'contact')
   .then(AssociatedContactsResponse => {
-
-    //        console.log( JSON.stringify(AssociatedContactsResponse) )
-
     return AssociatedContactsResponse.results.map(({ toObjectId }) => String(toObjectId))
   });  
   
-  
   // write contact associations to deal.
   const inputs = AssociatedContacts.map(id => ({
-    from: { id: NewDealID },
+    _from: { id: NewDealID }, // please note the _ before 'from'!!!
     to: { id },
     type: 'deal_to_contact'
   }))
   const BatchInputPublicAssociationContacts = { inputs };
-
-  try {
+  
+  try {  
     await hubspotClient.crm.associations.batchApi.create("Deals", "Contacts", BatchInputPublicAssociationContacts);
-  } catch (e) {
+  } 
+  
+  catch (e) {
     e.message === 'HTTP request failed'
       ? console.error(JSON.stringify(e.response, null, 2))
       : console.error(e)
   }
-
   
   // Pass information back as a data output to use as a data input with Copy to Property workflow action.
   callback({ 
@@ -132,5 +118,4 @@ exports.main = async (event, callback) => {
       NewDealID: NewDealID,
     }
   }); // end callback  
-
 }
